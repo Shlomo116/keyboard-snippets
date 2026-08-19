@@ -15,7 +15,26 @@
 
   /* אינדקס חיפוש: המחרוזות מומרות ל-lowercase פעם אחת בטעינה, לא בכל הקשה */
   let index = [];
-  let settings = { enabled: true };
+  let settings = { enabled: true, trigger: '//' };
+
+  /* בניית הרגקס מהטריגר שהמשתמש בחר */
+  const escapeRe = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  function buildTriggerRe(t) {
+    return new RegExp('(^|[\\s([{"\'\u2019\u201c<>\\-\u2013\u2014,;!?])' + escapeRe(t) + '(\\S*)$');
+  }
+  const validTrigger = (t) =>
+    typeof t === 'string' && t.length >= 1 && t.length <= 3 && !/[\w\s]/.test(t);
+
+  let TRIGGER_RE = buildTriggerRe('//');
+
+  /*
+   * עורכים עשירים (Lexical בוואטסאפ ווב, ProseMirror ואחרים) שותלים תווי אפס-רוחב
+   * וסימני כיווניות בתוך הטקסט, בעיקר בהקשר RTL ובשדה ריק. \s לא תופס אותם, ולכן
+   * תו אחד כזה לפני הטריגר היה מפיל את הזיהוי. מחליפים אותם ברווח — ולא מוחקים —
+   * כדי לשמור על אורך הטקסט, שכל חישובי המיקום נשענים עליו.
+   */
+  const INVISIBLE_RE = /[\u200b-\u200f\u2060\u2061-\u2064\ufeff\u00ad]/g;
+  const normalizeInvisible = (t) => (INVISIBLE_RE.test(t) ? t.replace(INVISIBLE_RE, ' ') : t);
 
   /* מצב דיבאג: בקונסולה של הדף הריצו  localStorage.snippetsDebug = 1  ורעננו */
   let DEBUG = false;
@@ -39,12 +58,20 @@
       if (chrome.runtime.lastError) return;
       buildIndex(res[STORE_KEY]);
       if (res[SETTINGS_KEY]) settings = Object.assign(settings, res[SETTINGS_KEY]);
+      if (!validTrigger(settings.trigger)) settings.trigger = '//';
+      TRIGGER_RE = buildTriggerRe(settings.trigger);
+      log('טריגר פעיל:', settings.trigger);
     });
 
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       if (changes[STORE_KEY]) buildIndex(changes[STORE_KEY].newValue);
-      if (changes[SETTINGS_KEY]) settings = Object.assign(settings, changes[SETTINGS_KEY].newValue || {});
+      if (changes[SETTINGS_KEY]) {
+        settings = Object.assign(settings, changes[SETTINGS_KEY].newValue || {});
+        if (!validTrigger(settings.trigger)) settings.trigger = '//';
+        TRIGGER_RE = buildTriggerRe(settings.trigger);
+        close();
+      }
     });
   }
 
@@ -172,9 +199,6 @@
     return { el, kind, before: scan.text, truncated: scan.truncated, caret: sel.anchorOffset, node, sel };
   }
 
-  // "//" בתחילת שורה או אחרי רווח/פיסוק - כך ש-http:// לא מפעיל את התפריט
-  const TRIGGER_RE = /(^|[\s([{"'’“<>\-–—,;!?])\/\/(\S*)$/;
-
   function dirOf(el) {
     try { return getComputedStyle(el).direction === 'ltr' ? 'ltr' : 'rtl'; }
     catch (_) { return 'rtl'; }
@@ -184,17 +208,24 @@
     if (!settings.enabled) { log('כבוי בהגדרות'); return null; }
     const ctx = readContext();
     if (!ctx) { log('אין שדה עריכה פעיל / סמן לא מכווץ'); return null; }
-    const m = TRIGGER_RE.exec(ctx.before);
-    if (!m) { log('אין טריגר. הטקסט שלפני הסמן:', JSON.stringify(ctx.before.slice(-30))); return null; }
+    const before = normalizeInvisible(ctx.before);
+    const m = TRIGGER_RE.exec(before);
+    if (!m) {
+      log('אין טריגר (' + settings.trigger + '). לפני הסמן:', JSON.stringify(before.slice(-30)));
+      return null;
+    }
     // חלון הסריקה חתוך, כך שהתאמה ל-"^" לא באמת מעידה על תחילת שורה
     if (m[1] === '' && ctx.truncated) { log('התאמה בגבול חלון הסריקה — נדחתה'); return null; }
     const query = m[2];
-    if (query.length > MAX_QUERY || query.startsWith('/')) { log('שאילתה נפסלה:', query); return null; }
+    const lastChar = settings.trigger.slice(-1);
+    if (query.length > MAX_QUERY || query.startsWith(lastChar)) { log('שאילתה נפסלה:', query); return null; }
     log('טריגר זוהה. שאילתה:', JSON.stringify(query), '| סוג:', ctx.kind);
     return {
       el: ctx.el, kind: ctx.kind, node: ctx.node, sel: ctx.sel, caret: ctx.caret,
-      start: (ctx.kind === 'input' ? ctx.caret - (query.length + 2) : m.index + m[1].length),
-      trigger: '//' + query,
+      start: (ctx.kind === 'input'
+        ? ctx.caret - (query.length + settings.trigger.length)
+        : m.index + m[1].length),
+      trigger: settings.trigger + query,
       dir: dirOf(ctx.el),
       query,
     };
@@ -397,7 +428,7 @@
     buildUI();
     ui.box.setAttribute('dir', state.dir);
     const key = state.query + ' ' + state.items.map((s) => s.id).join(',');
-    ui.q.textContent = '//' + state.query;
+    ui.q.textContent = settings.trigger + state.query;
     ui.count.textContent = state.items.length
       ? state.items.length + (state.items.length === MAX_RESULTS ? '+' : '')
       : '0';
@@ -424,7 +455,7 @@
           col.className = 'col';
           const t = document.createElement('div');
           t.className = 'title';
-          t.innerHTML = '//' + highlight(String(s.title || ''), state.query);
+          t.innerHTML = escapeHtml(settings.trigger) + highlight(String(s.title || ''), state.query);
           const p = document.createElement('div');
           p.className = 'preview';
           p.textContent = String(s.text || '').replace(/\s+/g, ' ').trim().slice(0, 100);
@@ -764,7 +795,18 @@
     }
   }, true);
 
-  document.addEventListener('input', refresh, true);
+  /*
+   * Lexical ודומיו מסיימים לכתוב את ה-DOM אחרי אירוע ה-input, ולכן קריאה סינכרונית
+   * בלבד עלולה לראות מצב ביניים. בודקים גם בתור המשימות הבא.
+   */
+  let recheck = 0;
+  function refreshSoon() {
+    refresh();
+    clearTimeout(recheck);
+    recheck = setTimeout(refresh, 0);
+  }
+
+  document.addEventListener('input', refreshSoon, true);
 
   // גיבוי ל-selectionchange: תנועת סמן בחצים/עכבר בשדות input בדפדפנים ישנים
   document.addEventListener('keyup', (e) => {

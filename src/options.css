@@ -57,6 +57,13 @@ h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
 .switch input:focus-visible + .track { outline: 2px solid var(--brand); outline-offset: 2px; }
 .switchLabel { font-size: 13px; }
 
+/* בורר הטריגר */
+.trigPick { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.trigPick select {
+  width: auto; padding: 5px 8px; font-weight: 700; font-size: 14px;
+  color: var(--brand); text-align: center;
+}
+
 /* ---------- פריסה ---------- */
 main {
   display: grid; grid-template-columns: 370px minmax(0, 1fr); gap: 20px;

@@ -85,7 +85,7 @@ function render() {
     body.className = 'body';
     const name = document.createElement('div');
     name.className = 'name';
-    name.innerHTML = '//' + mark(s.title, q);
+    name.innerHTML = escapeHtml(settings.trigger) + mark(s.title, q);
     const snip = document.createElement('div');
     snip.className = 'snippet';
     snip.textContent = s.text;
@@ -136,7 +136,7 @@ async function duplicate(s) {
 }
 
 async function remove(s) {
-  if (!confirm('למחוק את הקיצור //' + s.title + '?')) return;
+  if (!confirm('למחוק את הקיצור ' + settings.trigger + s.title + '?')) return;
   snippets = snippets.filter((x) => x.id !== s.id);
   if (editingId === s.id) resetForm();
   await save();
@@ -148,7 +148,7 @@ function startEdit(s) {
   editingId = s.id;
   titleEl.value = s.title;
   textEl.value = s.text;
-  editorTitle.textContent = 'עריכת //' + s.title;
+  editorTitle.textContent = 'עריכת ' + settings.trigger + s.title;
   saveBtn.textContent = 'עדכון';
   cancelBtn.hidden = false;
   render();
@@ -194,7 +194,7 @@ form.addEventListener('submit', async (e) => {
     toast('עודכן');
   } else {
     snippets.push({ id: uid(), title, text, uses: 0, createdAt: Date.now() });
-    toast('נוסף — נסו //' + title);
+    toast('נוסף — נסו ' + settings.trigger + title);
   }
   await save();
   resetForm();
@@ -213,10 +213,31 @@ document.addEventListener('keydown', (e) => {
   if (e.key === '/' && e.target === document.body) { e.preventDefault(); searchEl.focus(); }
 });
 
-/* ---------- הפעלה / כיבוי ---------- */
+/* ---------- הגדרות ---------- */
+let settings = { enabled: true, trigger: '//' };
+
+// מיזוג ולא דריסה: כתיבה של שדה אחד לא אמורה למחוק את השני
+function saveSettings(patch) {
+  settings = Object.assign({}, settings, patch);
+  chrome.storage.local.set({ [SETTINGS_KEY]: settings });
+}
+
+function applySettingsToUI() {
+  $('enabled').checked = settings.enabled !== false;
+  $('trigger').value = settings.trigger;
+  $('prefix').textContent = settings.trigger;
+}
+
 $('enabled').addEventListener('change', (e) => {
-  chrome.storage.local.set({ [SETTINGS_KEY]: { enabled: e.target.checked } });
+  saveSettings({ enabled: e.target.checked });
   toast(e.target.checked ? 'התוסף הופעל' : 'התוסף כובה');
+});
+
+$('trigger').addEventListener('change', (e) => {
+  saveSettings({ trigger: e.target.value });
+  $('prefix').textContent = e.target.value;
+  render();
+  toast('הפתיחה שונתה ל־' + e.target.value);
 });
 
 /* ---------- ייצוא / ייבוא / איפוס ---------- */
@@ -287,7 +308,10 @@ $('seedBtn').addEventListener('click', async () => {
 /* ---------- אתחול + סנכרון בין לשוניות ---------- */
 chrome.storage.local.get([STORE_KEY, SETTINGS_KEY], (res) => {
   snippets = Array.isArray(res[STORE_KEY]) ? res[STORE_KEY] : [];
-  $('enabled').checked = res[SETTINGS_KEY] ? res[SETTINGS_KEY].enabled !== false : true;
+  settings = Object.assign(settings, res[SETTINGS_KEY] || {});
+  const known = Array.from($('trigger').options).some((o) => o.value === settings.trigger);
+  if (!known) settings.trigger = '//';
+  applySettingsToUI();
   render();
 });
 
@@ -299,7 +323,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     else render();
   }
   if (changes[SETTINGS_KEY]) {
-    const v = changes[SETTINGS_KEY].newValue || {};
-    $('enabled').checked = v.enabled !== false;
+    settings = Object.assign(settings, changes[SETTINGS_KEY].newValue || {});
+    applySettingsToUI();
+    render();
   }
 });

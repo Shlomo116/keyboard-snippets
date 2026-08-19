@@ -7,6 +7,7 @@ const slug = (s) => slugLive(s).replace(/^-+|-+$/g, '');
 const uid = () => 's_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 let snippets = [];
+let trigger = '//';
 
 function render() {
   $('badge').textContent = String(snippets.length);
@@ -28,7 +29,7 @@ function render() {
       const d = document.createElement('div');
       d.className = 'item';
       const b = document.createElement('b');
-      b.textContent = '//' + s.title;
+      b.textContent = trigger + s.title;
       const sp = document.createElement('span');
       sp.textContent = s.text.replace(/\s+/g, ' ').trim();
       d.append(b, sp);
@@ -82,8 +83,10 @@ $('open').addEventListener('click', () => {
   window.close();
 });
 
-chrome.storage.local.get([STORE_KEY], (res) => {
+chrome.storage.local.get([STORE_KEY, 'settings'], (res) => {
   snippets = Array.isArray(res[STORE_KEY]) ? res[STORE_KEY] : [];
+  trigger = (res.settings && res.settings.trigger) || '//';
+  $('trig').textContent = trigger;
   render();
   $('title').focus();
 });

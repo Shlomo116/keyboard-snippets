@@ -17,6 +17,17 @@
     <div class="topRight">
       <div class="stat"><b id="statCount">0</b><span>קיצורים</span></div>
       <div class="stat"><b id="statUses">0</b><span>שימושים</span></div>
+      <label class="trigPick" title="האתר שבו אתם עובדים תופס את הצירוף לעצמו? החליפו אותו">
+        <span>פתיחה עם</span>
+        <select id="trigger">
+          <option value="//">//</option>
+          <option value=";;">;;</option>
+          <option value="::">::</option>
+          <option value="..">..</option>
+          <option value=",,">,,</option>
+          <option value="\\">\\</option>
+        </select>
+      </label>
       <label class="switch" title="כיבוי זמני של התוסף בכל הלשוניות">
         <span class="switchLabel">פעיל</span>
         <input type="checkbox" id="enabled" checked>
@@ -32,7 +43,7 @@
         <label class="field">
           <span>כותרת הקיצור <em>(ללא רווחים)</em></span>
           <div class="titleWrap">
-            <span class="prefix">//</span>
+            <span class="prefix" id="prefix">//</span>
             <input id="title" type="text" placeholder="ברוכים-הבאים" required maxlength="40" dir="auto">
           </div>
         </label>
