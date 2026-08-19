@@ -34,7 +34,8 @@
    * כדי לשמור על אורך הטקסט, שכל חישובי המיקום נשענים עליו.
    */
   const INVISIBLE_RE = /[\u200b-\u200f\u2060\u2061-\u2064\ufeff\u00ad]/g;
-  const normalizeInvisible = (t) => (INVISIBLE_RE.test(t) ? t.replace(INVISIBLE_RE, ' ') : t);
+  // בלי test() מקדים: ל-RegExp עם דגל g יש lastIndex שנשמר בין קריאות ומחזיר תשובות שגויות
+  const normalizeInvisible = (t) => t.replace(INVISIBLE_RE, ' ');
 
   /* מצב דיבאג: בקונסולה של הדף הריצו  localStorage.snippetsDebug = 1  ורעננו */
   let DEBUG = false;
@@ -85,6 +86,7 @@
     start: 0,       // input: אינדקס תחילת ה-//
     trigger: '',    // המחרוזת המדויקת שיש להחליף, למשל "//תוד"
     caretInNode: 0, // contenteditable: היסט הסמן בתוך צומת הטקסט
+    range: null,    // contenteditable: עותק של טווח הסמן ברגע הזיהוי
     dir: 'rtl',     // כיוון הכתיבה של השדה
     query: '',
     items: [],
@@ -196,7 +198,12 @@
     if (!container || !el.contains(container)) return null;
     const scan = textBeforeCaretCE(el, container, sel.anchorOffset);
     const node = container.nodeType === Node.TEXT_NODE ? container : null;
-    return { el, kind, before: scan.text, truncated: scan.truncated, caret: sel.anchorOffset, node, sel };
+    let range = null;
+    try { range = sel.getRangeAt(0).cloneRange(); } catch (_) { range = null; }
+    return {
+      el, kind, node, sel, range,
+      before: scan.text, truncated: scan.truncated, caret: sel.anchorOffset,
+    };
   }
 
   function dirOf(el) {
@@ -603,6 +610,7 @@
     state.start = hit.start;
     state.trigger = hit.trigger;
     state.caretInNode = hit.caret;
+    state.range = hit.range || null;
     state.dir = hit.dir;
     state.query = hit.query;
     state.items = items;
@@ -618,7 +626,7 @@
     state.index = 0;
     state.key = '';
     state.trigger = '';
-    state.target = state.node = state.sel = null;
+    state.target = state.node = state.sel = state.range = null;
     if (ui.box) ui.box.style.display = 'none';
   }
 
@@ -664,26 +672,72 @@
    * של צמתים ושל span-ים שהעורך יצר, ולכן זה מה שעובד מול Lexical (וואטסאפ ווב),
    * ProseMirror ו-Draft, שם חיתוך טווח לפי אינדקסים בצומת בודד נכשל.
    */
+  const stripInvisible = (t) => t.replace(INVISIBLE_RE, '');
+
+  /*
+   * ספירה עיוורת של תווים אחורה שבירה: תו אפס-רוחב אחד שהעורך שתל בתוך הטווח,
+   * או צעד שמדלג על אשכול גרפמות שלם, מזיזים את הבחירה ממקומה. לכן מתקדמים
+   * אחורה צעד-צעד ובודקים אחרי כל צעד אם הגענו בדיוק לטריגר.
+   */
   function selectTriggerBackwards(sel, trigger) {
-    if (typeof sel.modify !== 'function') return false;
-    const steps = Array.from(trigger).length; // ספירה לפי נקודות קוד, בגלל אמוג'י
-    for (let i = 0; i < steps; i++) sel.modify('extend', 'backward', 'character');
-    if (sel.toString() === trigger) return true;
-    log('modify בחר טקסט לא תואם:', JSON.stringify(sel.toString()), 'במקום', JSON.stringify(trigger));
-    sel.collapseToEnd();
+    if (typeof sel.modify !== 'function') { log('אין תמיכה ב-Selection.modify'); return false; }
+    const want = stripInvisible(trigger);
+    const maxSteps = Array.from(trigger).length + 8; // מרווח לתווים בלתי נראים
+    let last = '';
+    for (let i = 0; i < maxSteps; i++) {
+      sel.modify('extend', 'backward', 'character');
+      const got = sel.toString();
+      if (got === last) break;          // הגענו לתחילת הטקסט ואין לאן להתקדם
+      last = got;
+      if (stripInvisible(got) === want) { log('הטריגר נבחר אחרי', i + 1, 'צעדים'); return true; }
+    }
+    log('לא הצלחתי לבחור את הטריגר. נבחר:', JSON.stringify(last), '| רצוי:', JSON.stringify(trigger));
+    try { sel.collapseToEnd(); } catch (_) { /* ignore */ }
     return false;
+  }
+
+  /*
+   * מסלול הדבקה שני: אירוע הדבקה מסונתז. עורכי framework מטפלים בהדבקה
+   * כמסלול ליבה, ולכן זה עובד גם כשה-execCommand לא נתפס.
+   */
+  function insertViaPaste(el, text) {
+    try {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      const handled = el.dispatchEvent(ev) === false; // preventDefault = העורך טיפל
+      log('אירוע הדבקה מסונתז:', handled ? 'טופל' : 'לא טופל');
+      return handled;
+    } catch (_) {
+      return false;
+    }
   }
 
   function insertIntoCE(el, text) {
     const sel = state.sel || selectionFor(el);
-    if (!sel || sel.rangeCount === 0) return false;
+    if (!sel) return false;
     const trigger = state.trigger;
+    const snapshot = el.textContent;
 
-    // מסלול ראשי
-    if (selectTriggerBackwards(sel, trigger)) {
+    // אם הפוקוס נדד, מחזירים אותו ומשחזרים את טווח הסמן — בלי זה execCommand לא פועל
+    const focused = document.activeElement;
+    if (focused !== el && !el.contains(focused)) {
+      log('הפוקוס אבד מהשדה, משחזר');
       try {
-        if (document.execCommand('insertText', false, text)) { log('הודבק דרך modify+execCommand'); return true; }
+        el.focus({ preventScroll: true });
+        if (state.range) { sel.removeAllRanges(); sel.addRange(state.range); }
       } catch (_) { /* ממשיכים */ }
+    }
+    if (sel.rangeCount === 0) return false;
+
+    // מסלול ראשי: בחירת הטריגר, ואז החלפה ב-execCommand ואם לא — בהדבקה מסונתזת
+    if (selectTriggerBackwards(sel, trigger)) {
+      let ok = false;
+      try { ok = document.execCommand('insertText', false, text); } catch (_) { ok = false; }
+      if (ok) { log('הודבק דרך modify+execCommand'); verifyChanged(el, snapshot); return true; }
+
+      if (insertViaPaste(el, text)) { verifyChanged(el, snapshot); return true; }
+      log('execCommand וגם הדבקה מסונתזת לא נתפסו, עובר למסלול הטווח');
     }
 
     // מסלול גיבוי: חיתוך טווח בתוך צומת הסמן, כשהטריגר אכן יושב שם כולו
@@ -729,6 +783,18 @@
     } catch (_) {
       return false;
     }
+  }
+
+  /* בדיקה מושהית שהעורך אכן קלט. לא מדביקה שוב — רק מדווחת, כדי לא לכפול טקסט. */
+  function verifyChanged(el, snapshot) {
+    if (!DEBUG) return;
+    setTimeout(() => {
+      if (el.textContent === snapshot) {
+        log('אזהרה: הטקסט בשדה לא השתנה. העורך בלע את ההדבקה.');
+      } else {
+        log('אומת: הטקסט בשדה השתנה');
+      }
+    }, 60);
   }
 
   function insert(snippet) {
