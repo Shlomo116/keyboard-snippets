@@ -1,10 +1,9 @@
 'use strict';
 
-const STORE_KEY = 'snippets';
 const $ = (id) => document.getElementById(id);
 const slugLive = (s) => s.replace(/\s+/g, '-').replace(/[/\\]+/g, '');
 const slug = (s) => slugLive(s).replace(/^-+|-+$/g, '');
-const uid = () => 's_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const uid = () => SnippetStore.uid();
 
 let snippets = [];
 let trigger = '//';
@@ -54,28 +53,28 @@ $('title').addEventListener('input', (e) => {
   }
 });
 
-$('quick').addEventListener('submit', (e) => {
+$('quick').addEventListener('submit', async (e) => {
   e.preventDefault();
   const title = slug($('title').value);
   const text = $('text').value;
   if (!title || !text.trim()) return;
 
-  // קוראים מחדש כדי לא לדרוס עדכונים שקרו בזמן שהחלונית פתוחה
-  chrome.storage.local.get([STORE_KEY], (res) => {
-    const list = Array.isArray(res[STORE_KEY]) ? res[STORE_KEY] : [];
-    if (list.some((s) => s.title.toLowerCase() === title.toLowerCase())) {
-      toast('השם כבר תפוס');
-      return;
-    }
-    list.push({ id: uid(), title, text, uses: 0, createdAt: Date.now() });
-    chrome.storage.local.set({ [STORE_KEY]: list }, () => {
-      snippets = list;
-      $('quick').reset();
-      $('title').focus();
-      render();
-      toast('נוסף!');
-    });
-  });
+  // קוראים מחדש כדי לא להתנגש בעריכה שקרתה במכשיר אחר בזמן שהחלונית פתוחה
+  const list = await SnippetStore.getAll();
+  if (list.some((s) => s.title.toLowerCase() === title.toLowerCase())) {
+    toast('השם כבר תפוס');
+    return;
+  }
+  try {
+    await SnippetStore.put({ id: uid(), title, text });
+    snippets = await SnippetStore.getAll();
+    $('quick').reset();
+    $('title').focus();
+    render();
+    toast('נוסף!');
+  } catch (err) {
+    toast(err.kind === 'ITEM_TOO_BIG' ? 'ההודעה ארוכה מדי' : 'נגמר מקום הסנכרון');
+  }
 });
 
 $('open').addEventListener('click', () => {
@@ -83,17 +82,16 @@ $('open').addEventListener('click', () => {
   window.close();
 });
 
-chrome.storage.local.get([STORE_KEY, 'settings'], (res) => {
-  snippets = Array.isArray(res[STORE_KEY]) ? res[STORE_KEY] : [];
-  trigger = (res.settings && res.settings.trigger) || '//';
+(async () => {
+  const [list, settings] = await Promise.all([SnippetStore.getAll(), SnippetStore.getSettings()]);
+  snippets = list;
+  trigger = settings.trigger || '//';
   $('trig').textContent = trigger;
   render();
   $('title').focus();
-});
+})();
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes[STORE_KEY]) {
-    snippets = changes[STORE_KEY].newValue || [];
-    render();
-  }
+SnippetStore.onSnippetsChanged(async () => {
+  snippets = await SnippetStore.getAll();
+  render();
 });

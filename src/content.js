@@ -7,8 +7,6 @@
   if (window.__snippetsTriggerLoaded) return;
   window.__snippetsTriggerLoaded = true;
 
-  const STORE_KEY = 'snippets';
-  const SETTINGS_KEY = 'settings';
   const MAX_QUERY = 40;
   const MAX_RESULTS = 50;
   const ZWSP = '\u200b'; // zero-width space
@@ -56,26 +54,30 @@
     }));
   }
 
-  if (alive()) {
-    chrome.storage.local.get([STORE_KEY, SETTINGS_KEY], (res) => {
-      if (chrome.runtime.lastError) return;
-      buildIndex(res[STORE_KEY]);
-      if (res[SETTINGS_KEY]) settings = Object.assign(settings, res[SETTINGS_KEY]);
-      if (!validTrigger(settings.trigger)) settings.trigger = '//';
-      TRIGGER_RE = buildTriggerRe(settings.trigger);
-      log('טריגר פעיל:', settings.trigger);
-    });
+  function loadSnippets() {
+    if (!alive()) return;
+    SnippetStore.getAll()
+      .then((list) => { buildIndex(list); log('נטענו', list.length, 'קיצורים'); })
+      .catch((err) => log('טעינת הקיצורים נכשלה:', err));
+  }
 
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local') return;
-      if (changes[STORE_KEY]) buildIndex(changes[STORE_KEY].newValue);
-      if (changes[SETTINGS_KEY]) {
-        settings = Object.assign(settings, changes[SETTINGS_KEY].newValue || {});
+  function loadSettings() {
+    if (!alive()) return;
+    SnippetStore.getSettings()
+      .then((res) => {
+        settings = Object.assign(settings, res);
         if (!validTrigger(settings.trigger)) settings.trigger = '//';
         TRIGGER_RE = buildTriggerRe(settings.trigger);
-        close();
-      }
-    });
+        log('טריגר פעיל:', settings.trigger);
+      })
+      .catch((err) => log('טעינת ההגדרות נכשלה:', err));
+  }
+
+  if (alive()) {
+    loadSnippets();
+    loadSettings();
+    SnippetStore.onSnippetsChanged(loadSnippets);
+    SnippetStore.onSettingsChanged(() => { loadSettings(); close(); });
   }
 
   /* ---------- מצב התפריט ---------- */
@@ -899,16 +901,9 @@
 
   function countUse(id) {
     if (!alive()) return;
-    chrome.storage.local.get([STORE_KEY], (res) => {
-      if (chrome.runtime.lastError) return;
-      const list = Array.isArray(res[STORE_KEY]) ? res[STORE_KEY] : [];
-      const item = list.find((s) => s.id === id);
-      if (!item) return;
-      item.uses = (item.uses || 0) + 1;
-      item.lastUsed = Date.now();
-      chrome.storage.local.set({ [STORE_KEY]: list }, () => void chrome.runtime.lastError);
-    });
+    SnippetStore.bumpUsage(id).catch(() => { /* לא קריטי */ });
   }
+
 
   /* ---------- מאזינים ---------- */
   /* על window ולא על document: שלב ה-capture מתחיל ב-window, כך שאנחנו מקדימים

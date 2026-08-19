@@ -1,8 +1,5 @@
 'use strict';
 
-const STORE_KEY = 'snippets';
-const SETTINGS_KEY = 'settings';
-
 const $ = (id) => document.getElementById(id);
 const form = $('form'), titleEl = $('title'), textEl = $('text');
 const itemsEl = $('items'), emptyEl = $('empty'), emptyText = $('emptyText');
@@ -18,9 +15,38 @@ let statusTimer = 0;
 const slugLive = (s) => s.replace(/\s+/g, '-').replace(/[/\\]+/g, '');
 // בשמירה: מנקים גם את הקצוות
 const slug = (s) => slugLive(s).replace(/^-+|-+$/g, '');
-const uid = () => 's_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const uid = () => SnippetStore.uid();
 
-const save = () => new Promise((res) => chrome.storage.local.set({ [STORE_KEY]: snippets }, res));
+/* טעינה מחדש מהסנכרון. כל כתיבה עוברת דרך SnippetStore ואז מרעננת מכאן. */
+async function reload() {
+  snippets = await SnippetStore.getAll();
+  render();
+  refreshQuota();
+}
+
+/* הודעת שגיאה מובנת במקום קוד שגיאה */
+function explain(err) {
+  if (!err) return 'שגיאה לא ידועה';
+  if (err.kind === 'ITEM_TOO_BIG') {
+    return 'ההודעה ארוכה מדי לסנכרון (מגבלה 8KB לקיצור)';
+  }
+  if (err.kind === 'QUOTA_FULL') {
+    return 'נגמר מקום הסנכרון (100KB). מחקו קיצורים או ייצאו לקובץ';
+  }
+  return String(err.message || err);
+}
+
+async function refreshQuota() {
+  try {
+    const q = await SnippetStore.quota();
+    const bar = $('quotaBar');
+    const txt = $('quotaText');
+    if (!bar || !txt) return;
+    bar.style.width = Math.min(100, q.percent) + '%';
+    bar.classList.toggle('warn', q.percent >= 80);
+    txt.textContent = Math.round(q.bytes / 1024) + 'KB מתוך 100KB · ' + q.count + ' מתוך 512 קיצורים';
+  } catch (_) { /* לא קריטי */ }
+}
 
 function toast(msg) {
   statusEl.textContent = msg;
@@ -126,22 +152,21 @@ function uniqueTitle(base) {
 }
 
 async function duplicate(s) {
-  snippets.push({
-    id: uid(), title: uniqueTitle(s.title + '-עותק'), text: s.text,
-    uses: 0, createdAt: Date.now(),
-  });
-  await save();
-  render();
-  toast('שוכפל');
+  try {
+    await SnippetStore.put({ id: uid(), title: uniqueTitle(s.title + '-עותק'), text: s.text });
+    await reload();
+    toast('שוכפל');
+  } catch (err) { toast(explain(err)); }
 }
 
 async function remove(s) {
   if (!confirm('למחוק את הקיצור ' + settings.trigger + s.title + '?')) return;
-  snippets = snippets.filter((x) => x.id !== s.id);
-  if (editingId === s.id) resetForm();
-  await save();
-  render();
-  toast('נמחק');
+  try {
+    await SnippetStore.remove(s.id);
+    if (editingId === s.id) resetForm();
+    await reload();
+    toast('נמחק');
+  } catch (err) { toast(explain(err)); }
 }
 
 function startEdit(s) {
@@ -187,18 +212,20 @@ form.addEventListener('submit', async (e) => {
   const clash = snippets.find((s) => s.title.toLowerCase() === title.toLowerCase() && s.id !== editingId);
   if (clash) { toast('כבר קיים קיצור בשם הזה'); titleEl.focus(); titleEl.select(); return; }
 
-  if (editingId) {
-    const s = snippets.find((x) => x.id === editingId);
-    if (!s) { toast('הקיצור כבר לא קיים'); resetForm(); return; }
-    Object.assign(s, { title, text, updatedAt: Date.now() });
-    toast('עודכן');
-  } else {
-    snippets.push({ id: uid(), title, text, uses: 0, createdAt: Date.now() });
-    toast('נוסף — נסו ' + settings.trigger + title);
-  }
-  await save();
-  resetForm();
-  titleEl.focus();
+  try {
+    if (editingId) {
+      const cur = snippets.find((x) => x.id === editingId);
+      if (!cur) { toast('הקיצור כבר לא קיים'); resetForm(); return; }
+      await SnippetStore.put({ id: cur.id, title, text, createdAt: cur.createdAt });
+      toast('עודכן');
+    } else {
+      await SnippetStore.put({ id: uid(), title, text });
+      toast('נוסף — נסו ' + settings.trigger + title);
+    }
+    resetForm();
+    await reload();
+    titleEl.focus();
+  } catch (err) { toast(explain(err)); }
 });
 
 cancelBtn.addEventListener('click', resetForm);
@@ -219,7 +246,7 @@ let settings = { enabled: true, trigger: '//' };
 // מיזוג ולא דריסה: כתיבה של שדה אחד לא אמורה למחוק את השני
 function saveSettings(patch) {
   settings = Object.assign({}, settings, patch);
-  chrome.storage.local.set({ [SETTINGS_KEY]: settings });
+  SnippetStore.saveSettings(patch).catch((err) => toast(explain(err)));
 }
 
 function applySettingsToUI() {
@@ -263,18 +290,22 @@ $('importFile').addEventListener('change', async (e) => {
     const parsed = JSON.parse(await file.text());
     const incoming = Array.isArray(parsed) ? parsed : parsed.snippets;
     if (!Array.isArray(incoming)) throw new Error('bad format');
-    let added = 0, skipped = 0;
+    const taken = new Set(snippets.map((s) => s.title.toLowerCase()));
+    const toAdd = [];
+    let skipped = 0;
     for (const raw of incoming) {
       const title = slug(String(raw && raw.title || ''));
       const text = String(raw && raw.text || '');
-      if (!title || !text) { skipped++; continue; }
-      if (snippets.some((s) => s.title.toLowerCase() === title.toLowerCase())) { skipped++; continue; }
-      snippets.push({ id: uid(), title, text, uses: Number(raw.uses) || 0, createdAt: Date.now() });
-      added++;
+      if (!title || !text || taken.has(title.toLowerCase())) { skipped++; continue; }
+      taken.add(title.toLowerCase());
+      toAdd.push({ id: uid(), title, text });
     }
-    await save();
-    render();
-    toast('יובאו ' + added + ' קיצורים' + (skipped ? ' (' + skipped + ' דולגו)' : ''));
+    if (toAdd.length) {
+      toast('מייבא ' + toAdd.length + ' קיצורים...');
+      await SnippetStore.putMany(toAdd, (n, total) => toast('מייבא ' + n + ' מתוך ' + total + '...'));
+    }
+    await reload();
+    toast('יובאו ' + toAdd.length + ' קיצורים' + (skipped ? ' (' + skipped + ' דולגו)' : ''));
   } catch (_) {
     toast('קובץ לא תקין');
   }
@@ -283,10 +314,9 @@ $('importFile').addEventListener('change', async (e) => {
 $('clearBtn').addEventListener('click', async () => {
   if (!snippets.length) return toast('אין מה למחוק');
   if (!confirm('למחוק את כל ' + snippets.length + ' הקיצורים? הפעולה בלתי הפיכה.')) return;
-  snippets = [];
+  await SnippetStore.clearAll();
   resetForm();
-  await save();
-  render();
+  await reload();
   toast('הכול נמחק');
 });
 
@@ -296,35 +326,32 @@ $('seedBtn').addEventListener('click', async () => {
     { title: 'פרטים', text: 'כדי שנוכל להתקדם, נשמח לקבל:\n1. שם מלא\n2. מספר טלפון\n3. תיאור קצר של הבקשה' },
     { title: 'סגירה', text: 'הפנייה שלך טופלה ונסגרה. אם נותרה שאלה פתוחה — אנחנו כאן.' },
   ];
-  for (const s of seed) {
-    if (snippets.some((x) => x.title === s.title)) continue;
-    snippets.push({ id: uid(), ...s, uses: 0, createdAt: Date.now() });
-  }
-  await save();
-  render();
-  toast('נוספו קיצורים לדוגמה');
+  const fresh = seed.filter((s) => !snippets.some((x) => x.title === s.title));
+  try {
+    await SnippetStore.putMany(fresh.map((s) => ({ id: uid(), ...s })));
+    await reload();
+    toast('נוספו קיצורים לדוגמה');
+  } catch (err) { toast(explain(err)); }
 });
 
-/* ---------- אתחול + סנכרון בין לשוניות ---------- */
-chrome.storage.local.get([STORE_KEY, SETTINGS_KEY], (res) => {
-  snippets = Array.isArray(res[STORE_KEY]) ? res[STORE_KEY] : [];
-  settings = Object.assign(settings, res[SETTINGS_KEY] || {});
+/* ---------- אתחול + סנכרון בין לשוניות ומכשירים ---------- */
+(async () => {
+  settings = await SnippetStore.getSettings();
   const known = Array.from($('trigger').options).some((o) => o.value === settings.trigger);
   if (!known) settings.trigger = '//';
   applySettingsToUI();
-  render();
+  await reload();
+})();
+
+SnippetStore.onSnippetsChanged(async () => {
+  snippets = await SnippetStore.getAll();
+  if (editingId && !snippets.some((s) => s.id === editingId)) resetForm();
+  else render();
+  refreshQuota();
 });
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local') return;
-  if (changes[STORE_KEY]) {
-    snippets = changes[STORE_KEY].newValue || [];
-    if (editingId && !snippets.some((s) => s.id === editingId)) resetForm();
-    else render();
-  }
-  if (changes[SETTINGS_KEY]) {
-    settings = Object.assign(settings, changes[SETTINGS_KEY].newValue || {});
-    applySettingsToUI();
-    render();
-  }
+SnippetStore.onSettingsChanged((v) => {
+  settings = Object.assign(settings, v);
+  applySettingsToUI();
+  render();
 });

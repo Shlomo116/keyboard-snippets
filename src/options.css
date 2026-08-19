@@ -158,3 +158,24 @@ li button.del { color: var(--danger); }
   font-size: 20px; font-weight: 800;
 }
 .empty p { margin: 0 0 14px; }
+
+/* ---------- מצב הסנכרון ---------- */
+.sync {
+  margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line);
+}
+.syncHead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.syncTitle { font-size: 12.5px; font-weight: 600; }
+.syncBadge {
+  font-size: 10.5px; padding: 1px 8px; border-radius: 20px;
+  background: color-mix(in srgb, #16a34a 16%, transparent); color: #16a34a; font-weight: 600;
+}
+.quotaTrack {
+  height: 6px; border-radius: 6px; background: var(--bg);
+  overflow: hidden; border: 1px solid var(--line);
+}
+.quotaBar {
+  height: 100%; width: 0; border-radius: 6px; background: var(--brand);
+  transition: width .3s;
+}
+.quotaBar.warn { background: #e0a80d; }
+.sync small { margin-top: 6px; }
