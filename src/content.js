@@ -17,6 +17,11 @@
   let index = [];
   let settings = { enabled: true };
 
+  /* מצב דיבאג: בקונסולה של הדף הריצו  localStorage.snippetsDebug = 1  ורעננו */
+  let DEBUG = false;
+  try { DEBUG = !!localStorage.getItem('snippetsDebug'); } catch (_) { DEBUG = false; }
+  const log = (...a) => { if (DEBUG) console.log('%c[//]', 'color:#4353d6;font-weight:bold', ...a); };
+
   const alive = () => {
     try { return !!(chrome.runtime && chrome.runtime.id); } catch (_) { return false; }
   };
@@ -48,9 +53,12 @@
     open: false,
     target: null,   // האלמנט שבו מקלידים
     kind: null,     // 'input' | 'ce'
-    node: null,     // contenteditable: צומת הטקסט
+    node: null,     // contenteditable: צומת הטקסט של הסמן
     sel: null,      // contenteditable: אובייקט ה-Selection הרלוונטי
-    start: 0,       // אינדקס תחילת ה-//
+    start: 0,       // input: אינדקס תחילת ה-//
+    trigger: '',    // המחרוזת המדויקת שיש להחליף, למשל "//תוד"
+    caretInNode: 0, // contenteditable: היסט הסמן בתוך צומת הטקסט
+    dir: 'rtl',     // כיוון הכתיבה של השדה
     query: '',
     items: [],
     index: 0,
@@ -94,6 +102,50 @@
   }
 
   /* ---------- קריאת הטקסט שלפני הסמן ---------- */
+  const SCAN_LIMIT = 200; // אין טעם לסרוק יותר מזה אחורה
+
+  const BLOCK_TAGS = new Set([
+    'P','DIV','LI','TD','TH','BLOCKQUOTE','PRE','SECTION','ARTICLE','MAIN','ASIDE',
+    'HEADER','FOOTER','FIGCAPTION','DD','DT','FORM','BODY','H1','H2','H3','H4','H5','H6',
+  ]);
+
+  function blockAncestor(node, root) {
+    let n = node && node.nodeType === Node.ELEMENT_NODE ? node : (node && node.parentNode);
+    while (n && n !== root) {
+      if (n.nodeType === Node.ELEMENT_NODE && BLOCK_TAGS.has(n.tagName)) return n;
+      n = n.parentNode;
+    }
+    return root;
+  }
+
+  /*
+   * עורכים כמו Lexical (וואטסאפ ווב), ProseMirror או Draft מפצלים טקסט בין הרבה
+   * span-ים, כך שה-"//" והמילה שאחריו יכולים לשבת בצמתים שונים לגמרי. לכן אוספים
+   * את הטקסט שלפני הסמן בהליכה על כל בלוק התוכן, ולא רק מתוך צומת הסמן.
+   */
+  function textBeforeCaretCE(root, container, offset) {
+    const block = blockAncestor(container, root);
+    let stopNode = null;
+    if (container.nodeType === Node.TEXT_NODE) stopNode = container;
+    else stopNode = container.childNodes[offset] || null;
+
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    let out = '';
+    let n;
+    while ((n = walker.nextNode())) {
+      if (n === stopNode) {
+        if (n.nodeType === Node.TEXT_NODE) out += n.textContent.slice(0, offset);
+        break;
+      }
+      if (n.nodeType === Node.TEXT_NODE) out += n.textContent;
+      else if (n.tagName === 'BR') out += '\n';
+      else if (out && BLOCK_TAGS.has(n.tagName)) out += '\n';
+    }
+    return out.length > SCAN_LIMIT
+      ? { text: out.slice(-SCAN_LIMIT), truncated: true }
+      : { text: out, truncated: false };
+  }
+
   function readContext() {
     const active = activeEditable();
     if (!active) return null;
@@ -103,32 +155,47 @@
       let caret;
       try { caret = el.selectionStart; } catch (_) { return null; }
       if (caret === null || caret !== el.selectionEnd) return null;
-      return { el, kind, before: el.value.slice(0, caret), caret, node: null, sel: null };
+      const from = Math.max(0, caret - SCAN_LIMIT);
+      return {
+        el, kind, caret, node: null, sel: null,
+        before: el.value.slice(from, caret),
+        truncated: from > 0,
+      };
     }
 
     const sel = selectionFor(el);
     if (!sel || !sel.isCollapsed || sel.rangeCount === 0) return null;
-    const node = sel.anchorNode;
-    if (!node || node.nodeType !== Node.TEXT_NODE) return null;
-    if (!el.contains(node)) return null;
-    const offset = sel.anchorOffset;
-    return { el, kind, before: node.textContent.slice(0, offset), caret: offset, node, sel };
+    const container = sel.anchorNode;
+    if (!container || !el.contains(container)) return null;
+    const scan = textBeforeCaretCE(el, container, sel.anchorOffset);
+    const node = container.nodeType === Node.TEXT_NODE ? container : null;
+    return { el, kind, before: scan.text, truncated: scan.truncated, caret: sel.anchorOffset, node, sel };
   }
 
   // "//" בתחילת שורה או אחרי רווח/פיסוק - כך ש-http:// לא מפעיל את התפריט
   const TRIGGER_RE = /(^|[\s([{"'’“<>\-–—,;!?])\/\/(\S*)$/;
 
+  function dirOf(el) {
+    try { return getComputedStyle(el).direction === 'ltr' ? 'ltr' : 'rtl'; }
+    catch (_) { return 'rtl'; }
+  }
+
   function detect() {
-    if (!settings.enabled) return null;
+    if (!settings.enabled) { log('כבוי בהגדרות'); return null; }
     const ctx = readContext();
-    if (!ctx) return null;
+    if (!ctx) { log('אין שדה עריכה פעיל / סמן לא מכווץ'); return null; }
     const m = TRIGGER_RE.exec(ctx.before);
-    if (!m) return null;
+    if (!m) { log('אין טריגר. הטקסט שלפני הסמן:', JSON.stringify(ctx.before.slice(-30))); return null; }
+    // חלון הסריקה חתוך, כך שהתאמה ל-"^" לא באמת מעידה על תחילת שורה
+    if (m[1] === '' && ctx.truncated) { log('התאמה בגבול חלון הסריקה — נדחתה'); return null; }
     const query = m[2];
-    if (query.length > MAX_QUERY || query.startsWith('/')) return null;
+    if (query.length > MAX_QUERY || query.startsWith('/')) { log('שאילתה נפסלה:', query); return null; }
+    log('טריגר זוהה. שאילתה:', JSON.stringify(query), '| סוג:', ctx.kind);
     return {
       el: ctx.el, kind: ctx.kind, node: ctx.node, sel: ctx.sel, caret: ctx.caret,
-      start: m.index + m[1].length,
+      start: (ctx.kind === 'input' ? ctx.caret - (query.length + 2) : m.index + m[1].length),
+      trigger: '//' + query,
+      dir: dirOf(ctx.el),
       query,
     };
   }
@@ -183,7 +250,7 @@
       border: 1px solid var(--line); border-radius: 12px;
       box-shadow: 0 12px 34px rgba(15,18,40,.20), 0 3px 8px rgba(15,18,40,.10);
       font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Rubik, Arial, sans-serif;
-      overflow: hidden; direction: rtl;
+      overflow: hidden;
       transform-origin: top right;
       animation: pop .09s cubic-bezier(.2,.9,.3,1.1);
       --bg: #fff; --ink: #171a24; --muted: #6b7280; --line: rgba(15,18,40,.12);
@@ -220,12 +287,12 @@
 
     .item {
       display: flex; align-items: baseline; gap: 8px;
-      padding: 7px 9px; padding-inline-start: 24px;
+      padding: 7px 9px; padding-inline-end: 26px;
       border-radius: 8px; cursor: pointer; position: relative;
     }
     .item[aria-selected="true"] { background: var(--sel); }
     .item[aria-selected="true"]::after {
-      content: "\\21B5"; position: absolute; inset-inline-start: 9px; top: 7px;
+      content: "\\21B5"; position: absolute; inset-inline-end: 9px; top: 7px;
       color: var(--brand); font-size: 12px; opacity: .75;
     }
     .col { flex: 1; min-width: 0; }
@@ -328,6 +395,7 @@
 
   function render() {
     buildUI();
+    ui.box.setAttribute('dir', state.dir);
     const key = state.query + ' ' + state.items.map((s) => s.id).join(',');
     ui.q.textContent = '//' + state.query;
     ui.count.textContent = state.items.length
@@ -476,9 +544,12 @@
       if (above > 8) { top = above; flip = true; }
       else top = Math.max(8, vh - bh - 8);
     }
-    const left = Math.min(Math.max(8, r.left), Math.max(8, vw - bw - 8));
+    // ב-RTL הטקסט גדל שמאלה, ולכן הקצה הימני של התפריט הוא זה שנצמד לסמן.
+    const rtl = state.dir === 'rtl';
+    const wanted = rtl ? r.left - bw : r.left;
+    const left = Math.min(Math.max(8, wanted), Math.max(8, vw - bw - 8));
 
-    box.style.transformOrigin = flip ? 'bottom right' : 'top right';
+    box.style.transformOrigin = (flip ? 'bottom ' : 'top ') + (rtl ? 'right' : 'left');
     box.style.top = Math.round(top) + 'px';
     box.style.left = Math.round(left) + 'px';
   }
@@ -499,6 +570,9 @@
     state.node = hit.node;
     state.sel = hit.sel;
     state.start = hit.start;
+    state.trigger = hit.trigger;
+    state.caretInNode = hit.caret;
+    state.dir = hit.dir;
     state.query = hit.query;
     state.items = items;
     if (!sameList) state.index = 0;
@@ -512,6 +586,7 @@
     state.items = [];
     state.index = 0;
     state.key = '';
+    state.trigger = '';
     state.target = state.node = state.sel = null;
     if (ui.box) ui.box.style.display = 'none';
   }
@@ -532,45 +607,75 @@
   }
 
   function insertIntoInput(el, text) {
-    let caret;
-    try { caret = el.selectionStart; } catch (_) { caret = el.value.length; }
     const value = el.value;
-    const start = Math.min(state.start, value.length);
+    let caret;
+    try { caret = el.selectionStart; } catch (_) { caret = value.length; }
+    const start = Math.max(0, Math.min(state.start, value.length));
+
+    // מסלול ראשי: בחירת הטריגר והחלפתו דרך execCommand — שומר על Undo של הדפדפן
+    // ומייצר את אותם אירועים שהקלדה אמיתית מייצרת, כך שגם React/Vue קולטים.
+    try {
+      el.setSelectionRange(start, Math.max(start, caret));
+      if (document.execCommand('insertText', false, text)) { log('הודבק דרך execCommand'); return true; }
+    } catch (_) { /* ממשיכים למסלול הגיבוי */ }
+
     setNativeValue(el, value.slice(0, start) + text + value.slice(caret));
     const pos = start + text.length;
     try { el.setSelectionRange(pos, pos); } catch (_) { /* טיפוס שלא תומך */ }
     el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    log('הודבק דרך native setter');
     return true;
+  }
+
+  /*
+   * בחירת הטריגר לאחור באמצעות Selection.modify. זו הדרך היחידה שחוצה נכון גבולות
+   * של צמתים ושל span-ים שהעורך יצר, ולכן זה מה שעובד מול Lexical (וואטסאפ ווב),
+   * ProseMirror ו-Draft, שם חיתוך טווח לפי אינדקסים בצומת בודד נכשל.
+   */
+  function selectTriggerBackwards(sel, trigger) {
+    if (typeof sel.modify !== 'function') return false;
+    const steps = Array.from(trigger).length; // ספירה לפי נקודות קוד, בגלל אמוג'י
+    for (let i = 0; i < steps; i++) sel.modify('extend', 'backward', 'character');
+    if (sel.toString() === trigger) return true;
+    log('modify בחר טקסט לא תואם:', JSON.stringify(sel.toString()), 'במקום', JSON.stringify(trigger));
+    sel.collapseToEnd();
+    return false;
   }
 
   function insertIntoCE(el, text) {
     const sel = state.sel || selectionFor(el);
+    if (!sel || sel.rangeCount === 0) return false;
+    const trigger = state.trigger;
+
+    // מסלול ראשי
+    if (selectTriggerBackwards(sel, trigger)) {
+      try {
+        if (document.execCommand('insertText', false, text)) { log('הודבק דרך modify+execCommand'); return true; }
+      } catch (_) { /* ממשיכים */ }
+    }
+
+    // מסלול גיבוי: חיתוך טווח בתוך צומת הסמן, כשהטריגר אכן יושב שם כולו
     const node = state.node;
-    if (!sel || !node || !node.isConnected) return false;
+    if (!node || !node.isConnected) return false;
+    const upto = node.textContent.slice(0, Math.min(state.caretInNode || node.textContent.length,
+                                                    node.textContent.length));
+    if (!upto.endsWith(trigger)) { log('הטריגר לא נמצא בצומת בודד — אין מסלול גיבוי'); return false; }
 
-    const len = node.textContent.length;
-    const start = Math.min(state.start, len);
-    const caret = sel.anchorNode === node
-      ? sel.anchorOffset
-      : Math.min(start + state.query.length + 2, len);
-
+    const end = upto.length;
+    const start = end - trigger.length;
     const range = document.createRange();
     try {
       range.setStart(node, start);
-      range.setEnd(node, Math.min(Math.max(caret, start), len));
-    } catch (_) {
-      return false; // הצומת התחלף מתחת לידיים (עורך שמרנדר מחדש)
-    }
+      range.setEnd(node, end);
+    } catch (_) { return false; }
 
     sel.removeAllRanges();
     sel.addRange(range);
+    try {
+      if (document.execCommand('insertText', false, text)) { log('הודבק דרך range+execCommand'); return true; }
+    } catch (_) { /* ממשיכים */ }
 
-    let ok = false;
-    try { ok = document.execCommand('insertText', false, text); } catch (_) { ok = false; }
-    if (ok) return true;
-
-    // מסלול גיבוי ידני
     try {
       range.deleteContents();
       const frag = document.createDocumentFragment();
@@ -588,6 +693,7 @@
         sel.addRange(after);
       }
       el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+      log('הודבק דרך מניפולציית DOM ידנית');
       return true;
     } catch (_) {
       return false;
@@ -627,7 +733,9 @@
   }
 
   /* ---------- מאזינים ---------- */
-  document.addEventListener('keydown', (e) => {
+  /* על window ולא על document: שלב ה-capture מתחיל ב-window, כך שאנחנו מקדימים
+     גם אתרים שתופסים Enter בעצמם (וואטסאפ שולח הודעה ב-Enter). */
+  window.addEventListener('keydown', (e) => {
     if (!state.open || e.defaultPrevented) return;
     if (e.key === 'Escape') {
       e.preventDefault(); e.stopPropagation();

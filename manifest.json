@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "קיצורי הקלדה — Snippets",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "הקלדת // בכל שדה טקסט פותחת חיפוש מהיר בין ההודעות המוכנות מראש שלך.",
   "permissions": ["storage"],
   "action": {
@@ -26,7 +26,7 @@
       "matches": ["<all_urls>"],
       "all_frames": true,
       "match_about_blank": true,
-      "run_at": "document_idle",
+      "run_at": "document_start",
       "js": ["src/content.js"]
     }
   ]

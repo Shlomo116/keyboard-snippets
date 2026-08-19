@@ -1,4 +1,5 @@
 :root {
+  --dir: -1;  /* RTL: תזוזות חיוביות לוגית = שליליות פיזית */
   --bg: #f4f6fb; --card: #fff; --ink: #171a24; --muted: #6b7280;
   --line: rgba(15,18,40,.11); --brand: #4353d6; --brand-soft: #eef1ff;
   --danger: #c0392b; --shadow: 0 1px 2px rgba(15,18,40,.05), 0 8px 24px rgba(15,18,40,.05);
@@ -10,6 +11,7 @@
     --danger: #ff9a8f; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
   }
 }
+[dir="ltr"] { --dir: 1; }
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
@@ -43,12 +45,15 @@ h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
   width: 40px; height: 23px; border-radius: 20px; background: var(--line);
   position: relative; transition: background .15s;
 }
+/* המתג נשען על מאפיין לוגי אחד (inset-inline-start) + תזוזה שהסימן שלה נגזר מהכיוון,
+   כדי שלא ייווצר שוב ערבוב בין "התחלה" לוגית ל-translateX פיזי. */
 .knob {
-  position: absolute; top: 3px; inset-inline-end: 3px; width: 17px; height: 17px;
-  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .15s;
+  position: absolute; top: 3px; inset-inline-start: 3px; width: 17px; height: 17px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+  transition: transform .15s;
 }
 .switch input:checked + .track { background: var(--brand); }
-.switch input:checked + .track .knob { transform: translateX(-17px); }
+.switch input:checked + .track .knob { transform: translateX(calc(var(--dir) * 17px)); }
 .switch input:focus-visible + .track { outline: 2px solid var(--brand); outline-offset: 2px; }
 .switchLabel { font-size: 13px; }
 

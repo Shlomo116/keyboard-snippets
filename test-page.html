@@ -39,6 +39,26 @@
   <h2 class="ok">אזור עריכה עשיר (contenteditable)</h2>
   <div class="ce" contenteditable="true" data-ph="נסו // כאן"></div>
 
+  <h2 class="ok">עורך בסגנון Lexical — טקסט מפוצל בין span-ים (כמו וואטסאפ ווב)</h2>
+  <div class="ce" id="lexical" contenteditable="true" role="textbox"></div>
+  <p class="note">הכפתור מפצל את הטקסט לצמתים נפרדים, כדי לוודא שהזיהוי חוצה גבולות צמתים.</p>
+  <button type="button" id="splitBtn">פיצול הטקסט לצמתים</button>
+  <script>
+    document.getElementById('splitBtn').addEventListener('click', () => {
+      const el = document.getElementById('lexical');
+      const txt = el.textContent;
+      el.innerHTML = '';
+      const p = document.createElement('p');
+      for (const ch of txt) {
+        const sp = document.createElement('span');
+        sp.setAttribute('data-lexical-text', 'true');
+        sp.textContent = ch;
+        p.appendChild(sp);
+      }
+      el.appendChild(p);
+    });
+  </script>
+
   <h2 class="ok">שדות קצרים</h2>
   <div class="grid">
     <input type="text" placeholder="type=text">
