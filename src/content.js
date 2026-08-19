@@ -36,6 +36,8 @@
   const INVISIBLE_RE = /[\u200b-\u200f\u2060\u2061-\u2064\ufeff\u00ad]/g;
   // בלי test() מקדים: ל-RegExp עם דגל g יש lastIndex שנשמר בין קריאות ומחזיר תשובות שגויות
   const normalizeInvisible = (t) => t.replace(INVISIBLE_RE, ' ');
+  // ליומן האבחון: הפיכת הבלתי-נראה לנראה
+  const visible = (t) => String(t).replace(INVISIBLE_RE, (c) => '<' + c.codePointAt(0).toString(16) + '>');
 
   /* מצב דיבאג: בקונסולה של הדף הריצו  localStorage.snippetsDebug = 1  ורעננו */
   let DEBUG = false;
@@ -233,6 +235,7 @@
         ? ctx.caret - (query.length + settings.trigger.length)
         : m.index + m[1].length),
       trigger: settings.trigger + query,
+      range: (ctx.sel && ctx.sel.rangeCount) ? ctx.sel.getRangeAt(0).cloneRange() : null,
       dir: dirOf(ctx.el),
       query,
     };
@@ -645,11 +648,12 @@
     else el.value = value;
   }
 
-  function insertIntoInput(el, text) {
+  function insertIntoInput(ctx, text) {
+    const el = ctx.el;
     const value = el.value;
     let caret;
     try { caret = el.selectionStart; } catch (_) { caret = value.length; }
-    const start = Math.max(0, Math.min(state.start, value.length));
+    const start = Math.max(0, Math.min(ctx.start, value.length));
 
     // מסלול ראשי: בחירת הטריגר והחלפתו דרך execCommand — שומר על Undo של הדפדפן
     // ומייצר את אותם אירועים שהקלדה אמיתית מייצרת, כך שגם React/Vue קולטים.
@@ -696,70 +700,91 @@
     return false;
   }
 
+  /* ---------- מסלולי הדבקה ל-contenteditable ---------- */
+
   /*
-   * מסלול הדבקה שני: אירוע הדבקה מסונתז. עורכי framework מטפלים בהדבקה
-   * כמסלול ליבה, ולכן זה עובד גם כשה-execCommand לא נתפס.
+   * חתימת הצלחה: מחפשים את תחילת הטקסט שהודבק, ולא "משהו השתנה". ההבדל קריטי —
+   * מסלול שמחק את הטריגר אבל לא הדביק כלום היה נספר כהצלחה, והמשתמש היה נשאר
+   * בלי הטריגר וגם בלי הטקסט.
    */
-  function insertViaPaste(el, text) {
+  const flatten = (t) => stripInvisible(t).replace(/\s+/g, ' ');
+
+  /*
+   * החתימה נלקחת מהשורה הארוכה ביותר ולא מתחילת הטקסט, כי עורך שמפצל שורות
+   * לפסקאות נפרדות לא בהכרח משאיר מפריד ביניהן — חתימה שחוצה גבול שורה הייתה
+   * מייצרת כישלון שווא, ובעקבותיו הדבקה כפולה.
+   */
+  function fingerprint(t) {
+    const lines = String(t).split('\n').map((l) => flatten(l).trim());
+    let best = '';
+    for (const l of lines) if (l.length > best.length) best = l;
+    return best.slice(0, 24);
+  }
+
+  const occurrences = (hay, needle) =>
+    (!needle ? 0 : flatten(hay).split(needle).length - 1);
+
+  /* הצלחה = החתימה מופיעה יותר פעמים מקודם. עמיד גם למצב שבו הטקסט כבר היה בשדה. */
+  const landed = (el, mark, beforeCount) =>
+    !!mark && occurrences(el.textContent, mark) > beforeCount;
+
+  function execInsert(text) {
+    try { return document.execCommand('insertText', false, text); } catch (_) { return false; }
+  }
+
+  /* מסלול א: בחירת הטריגר והחלפתו */
+  function ceReplace(ctx, text) {
+    if (!selectTriggerBackwards(ctx.sel, ctx.trigger)) return false;
+    return execInsert(text);
+  }
+
+  /* מסלול ב: אירוע הדבקה מסונתז — עורכי framework מטפלים בהדבקה כמסלול ליבה */
+  function cePaste(ctx, text) {
+    if (!selectTriggerBackwards(ctx.sel, ctx.trigger)) return false;
     try {
       const dt = new DataTransfer();
       dt.setData('text/plain', text);
-      const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-      const handled = el.dispatchEvent(ev) === false; // preventDefault = העורך טיפל
-      log('אירוע הדבקה מסונתז:', handled ? 'טופל' : 'לא טופל');
-      return handled;
-    } catch (_) {
-      return false;
-    }
+      ctx.el.dispatchEvent(new ClipboardEvent('paste', {
+        clipboardData: dt, bubbles: true, cancelable: true,
+      }));
+      return true;
+    } catch (_) { return false; }
   }
 
-  function insertIntoCE(el, text) {
-    const sel = state.sel || selectionFor(el);
-    if (!sel) return false;
-    const trigger = state.trigger;
-    const snapshot = el.textContent;
-
-    // אם הפוקוס נדד, מחזירים אותו ומשחזרים את טווח הסמן — בלי זה execCommand לא פועל
-    const focused = document.activeElement;
-    if (focused !== el && !el.contains(focused)) {
-      log('הפוקוס אבד מהשדה, משחזר');
-      try {
-        el.focus({ preventScroll: true });
-        if (state.range) { sel.removeAllRanges(); sel.addRange(state.range); }
-      } catch (_) { /* ממשיכים */ }
-    }
-    if (sel.rangeCount === 0) return false;
-
-    // מסלול ראשי: בחירת הטריגר, ואז החלפה ב-execCommand ואם לא — בהדבקה מסונתזת
-    if (selectTriggerBackwards(sel, trigger)) {
-      let ok = false;
-      try { ok = document.execCommand('insertText', false, text); } catch (_) { ok = false; }
-      if (ok) { log('הודבק דרך modify+execCommand'); verifyChanged(el, snapshot); return true; }
-
-      if (insertViaPaste(el, text)) { verifyChanged(el, snapshot); return true; }
-      log('execCommand וגם הדבקה מסונתזת לא נתפסו, עובר למסלול הטווח');
-    }
-
-    // מסלול גיבוי: חיתוך טווח בתוך צומת הסמן, כשהטריגר אכן יושב שם כולו
-    const node = state.node;
-    if (!node || !node.isConnected) return false;
-    const upto = node.textContent.slice(0, Math.min(state.caretInNode || node.textContent.length,
-                                                    node.textContent.length));
-    if (!upto.endsWith(trigger)) { log('הטריגר לא נמצא בצומת בודד — אין מסלול גיבוי'); return false; }
-
-    const end = upto.length;
-    const start = end - trigger.length;
-    const range = document.createRange();
+  /*
+   * מסלול ג: מחיקה תו-תו כמו Backspace אמיתי ואז הקלדה. עורכים מבוססי beforeinput
+   * מטפלים ב-deleteContentBackward הכי אמין, כי זה בדיוק מה שהקלדה אמיתית מייצרת.
+   */
+  function ceBackspace(ctx, text) {
     try {
-      range.setStart(node, start);
-      range.setEnd(node, end);
+      ctx.sel.collapseToEnd();
+      const steps = Array.from(ctx.trigger).length;
+      for (let i = 0; i < steps; i++) document.execCommand('delete');
     } catch (_) { return false; }
+    return execInsert(text);
+  }
 
-    sel.removeAllRanges();
-    sel.addRange(range);
-    try {
-      if (document.execCommand('insertText', false, text)) { log('הודבק דרך range+execCommand'); return true; }
-    } catch (_) { /* ממשיכים */ }
+  /* מסלול ד: חיתוך טווח בצומת הסמן, ואם גם זה לא נתפס — בנייה ידנית */
+  function ceManual(ctx, text) {
+    const node = ctx.node;
+    if (!node || !node.isConnected) { log('אין צומת סמן למסלול הידני'); return false; }
+
+    const end = Math.min(ctx.caretInNode || node.textContent.length, node.textContent.length);
+    const upto = node.textContent.slice(0, end);
+    // מאתרים את ההיסט הגולמי שמכיל בדיוק את הטריגר, תוך התעלמות מתווים בלתי נראים
+    let start = -1;
+    for (let k = end; k >= 0; k--) {
+      const seg = stripInvisible(upto.slice(k));
+      if (seg === ctx.trigger) { start = k; break; }
+      if (seg.length > ctx.trigger.length) break;
+    }
+    if (start < 0) { log('הטריגר לא יושב בצומת בודד'); return false; }
+
+    const range = document.createRange();
+    try { range.setStart(node, start); range.setEnd(node, end); } catch (_) { return false; }
+    ctx.sel.removeAllRanges();
+    ctx.sel.addRange(range);
+    if (execInsert(text)) return true;
 
     try {
       range.deleteContents();
@@ -774,46 +799,102 @@
         const after = document.createRange();
         after.setStartAfter(last);
         after.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(after);
+        ctx.sel.removeAllRanges();
+        ctx.sel.addRange(after);
       }
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-      log('הודבק דרך מניפולציית DOM ידנית');
+      ctx.el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
       return true;
-    } catch (_) {
-      return false;
-    }
+    } catch (_) { return false; }
   }
 
-  /* בדיקה מושהית שהעורך אכן קלט. לא מדביקה שוב — רק מדווחת, כדי לא לכפול טקסט. */
-  function verifyChanged(el, snapshot) {
-    if (!DEBUG) return;
-    setTimeout(() => {
-      if (el.textContent === snapshot) {
-        log('אזהרה: הטקסט בשדה לא השתנה. העורך בלע את ההדבקה.');
-      } else {
-        log('אומת: הטקסט בשדה השתנה');
+  const CE_ROUTES = [
+    ['execCommand', ceReplace],
+    ['הדבקה מסונתזת', cePaste],
+    ['מחיקה תו-תו', ceBackspace],
+    ['טווח בצומת', ceManual],
+  ];
+
+  /*
+   * Lexical ודומיו מיישמים את השינוי אחרי שהאירוע נגמר, ולכן ערך ההחזרה של
+   * execCommand לא אומר כלום — הוא מחזיר true גם כשהעורך בלע את הפעולה. מנסים
+   * מסלול, ממתינים, ובודקים אם הטקסט אכן נחת. האימות הוא גם מה שמונע הדבקה כפולה.
+   */
+  function insertIntoCE(ctx, text, done) {
+    if (!ctx.sel) { log('אין אובייקט Selection'); return done(false); }
+
+    // אם הפוקוס נדד (לחיצה בעכבר), מחזירים אותו ומשחזרים את טווח הסמן
+    const focused = document.activeElement;
+    if (focused !== ctx.el && !ctx.el.contains(focused)) {
+      log('הפוקוס אבד מהשדה, משחזר');
+      try {
+        ctx.el.focus({ preventScroll: true });
+        if (ctx.range) { ctx.sel.removeAllRanges(); ctx.sel.addRange(ctx.range); }
+      } catch (_) { /* ממשיכים */ }
+    }
+    if (ctx.sel.rangeCount === 0) { log('אין טווח בחירה'); return done(false); }
+
+    const mark = fingerprint(text);
+    const beforeCount = occurrences(ctx.el.textContent, mark);
+    let i = 0;
+    const step = () => {
+      if (i >= CE_ROUTES.length) {
+        log('כל המסלולים נכשלו. בשדה:', visible(ctx.el.textContent.slice(-40)));
+        return done(false);
       }
-    }, 60);
+      const [name, run] = CE_ROUTES[i++];
+      let ran = false;
+      try { ran = run(ctx, text); } catch (_) { ran = false; }
+      log('מסלול "' + name + '":', ran ? 'הופעל' : 'לא הופעל');
+      setTimeout(() => {
+        if (landed(ctx.el, mark, beforeCount)) { log('הצליח: ' + name); return done(true); }
+        try { ctx.sel.collapseToEnd(); } catch (_) { /* ignore */ }
+        step();
+      }, 60);
+    };
+    step();
   }
 
   function insert(snippet) {
     if (!snippet) return;
     const el = state.target;
+    if (!el) return;
+
+    // מצלמים את כל מה שההדבקה צריכה, כדי שאפשר יהיה לסגור את התפריט מיד
+    const ctx = {
+      el,
+      kind: state.kind,
+      sel: state.sel || (state.kind === 'ce' ? selectionFor(el) : null),
+      node: state.node,
+      caretInNode: state.caretInNode,
+      trigger: state.trigger,
+      range: state.range,
+      start: state.start,
+    };
     const text = String(snippet.text || '');
     const id = snippet.id;
+
     busy = true;
-    let ok = false;
-    try {
-      ok = state.kind === 'input' ? insertIntoInput(el, text) : insertIntoCE(el, text);
-    } catch (_) {
-      ok = false;
-    } finally {
-      busy = false;
-    }
     close();
-    if (el && el.isConnected) el.focus({ preventScroll: true });
-    if (ok) countUse(id);
+    try { el.focus({ preventScroll: true }); } catch (_) { /* ignore */ }
+
+    // רשת ביטחון: busy לא יישאר תקוע גם אם משהו נופל בדרך
+    const bail = setTimeout(() => { busy = false; }, 3000);
+    const finish = (ok) => {
+      clearTimeout(bail);
+      busy = false;
+      if (ok) countUse(id);
+    };
+
+    if (ctx.kind === 'input') {
+      let ok = false;
+      try { ok = insertIntoInput(ctx, text); } catch (_) { ok = false; }
+      return finish(ok);
+    }
+    try {
+      insertIntoCE(ctx, text, finish);
+    } catch (_) {
+      finish(false);
+    }
   }
 
   function countUse(id) {
