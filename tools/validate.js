@@ -66,7 +66,7 @@ for (const f of CODE) {
 }
 
 /* ---------- קבצי פיתוח שאסור שייכנסו לחבילה ---------- */
-const DEV = ['test-page.html', 'README.md', 'LICENSE', '.gitignore', 'tools', 'dist', '.git'];
+const DEV = ['test-page.html', 'README.md', 'PRIVACY.md', 'LICENSE', '.gitignore', 'tools', 'store', 'dist', '.git'];
 notes.push('קבצי פיתוח שיוחרגו מהחבילה: ' + DEV.join(', '));
 
 /* ---------- סיכום ---------- */

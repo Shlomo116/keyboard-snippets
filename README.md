@@ -145,7 +145,9 @@ localStorage.snippetsDebug = 1
 ונעצר אם יש הפניה שבורה, משאב חיצוני, סקריפט מוטבע או `innerHTML` לא מוברח.
 
 טקסטי הפרסום, נימוקי ההרשאות ורשימת התמונות הנדרשות נמצאים ב־
-[tools/STORE.md](tools/STORE.md). מדיניות הפרטיות ב־[PRIVACY.md](PRIVACY.md).
+[tools/STORE.md](tools/STORE.md), ומיפוי של שגיאות הטופס בדשבורד לפעולות
+ב־[tools/SUBMIT.md](tools/SUBMIT.md). מדיניות הפרטיות ב־[PRIVACY.md](PRIVACY.md).
+סמל החנות: `store/icon-128.png`.
 
 ## בדיקות
 
