@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <title>קיצורי הקלדה — האזור האישי</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo">//</span>
+      <div>
+        <h1>האזור האישי</h1>
+        <p>הקיצורים נשמרים מקומית בדפדפן הזה בלבד — שום דבר לא נשלח לשרת.</p>
+      </div>
+    </div>
+    <div class="topRight">
+      <div class="stat"><b id="statCount">0</b><span>קיצורים</span></div>
+      <div class="stat"><b id="statUses">0</b><span>שימושים</span></div>
+      <label class="switch" title="כיבוי זמני של התוסף בכל הלשוניות">
+        <input type="checkbox" id="enabled" checked>
+        <span class="track"><span class="knob"></span></span>
+        <span class="switchLabel">פעיל</span>
+      </label>
+    </div>
+  </header>
+
+  <main>
+    <section class="card editor">
+      <h2 id="editorTitle">קיצור חדש</h2>
+      <form id="form" autocomplete="off">
+        <label class="field">
+          <span>כותרת הקיצור <em>(ללא רווחים)</em></span>
+          <div class="titleWrap">
+            <span class="prefix">//</span>
+            <input id="title" type="text" placeholder="ברוכים-הבאים" required maxlength="40" dir="auto">
+          </div>
+          <small id="titleHint">רווחים יומרו אוטומטית ל־"-"</small>
+        </label>
+
+        <label class="field">
+          <span>תוכן ההודעה</span>
+          <textarea id="text" rows="8" placeholder="הטקסט שיודבק כשבוחרים בקיצור..." required dir="auto"></textarea>
+          <small><kbd>Ctrl</kbd>+<kbd>Enter</kbd> לשמירה מהירה</small>
+        </label>
+
+        <div class="actions">
+          <button type="submit" class="primary" id="saveBtn">שמירה</button>
+          <button type="button" class="ghost" id="cancelBtn" hidden>ביטול</button>
+          <span class="status" id="status" role="status"></span>
+        </div>
+      </form>
+
+      <div class="io">
+        <button type="button" class="ghost" id="exportBtn">ייצוא</button>
+        <button type="button" class="ghost" id="importBtn">ייבוא</button>
+        <button type="button" class="ghost danger" id="clearBtn">מחיקת הכול</button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+      </div>
+    </section>
+
+    <section class="card list">
+      <div class="listHead">
+        <h2>הקיצורים שלי</h2>
+        <div class="tools">
+          <input id="search" type="search" placeholder="חיפוש..." dir="auto">
+          <select id="sort" title="מיון">
+            <option value="uses">לפי שימוש</option>
+            <option value="title">לפי א־ב</option>
+            <option value="new">החדשים ראשונים</option>
+          </select>
+        </div>
+      </div>
+      <ul id="items"></ul>
+      <div class="empty" id="empty">
+        <div class="emptyIcon">//</div>
+        <p id="emptyText">עדיין אין קיצורים. הוסיפו את הראשון בטופס שמימין.</p>
+        <button type="button" class="ghost" id="seedBtn">טעינת 3 קיצורים לדוגמה</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="options.js"></script>
+</body>
+</html>

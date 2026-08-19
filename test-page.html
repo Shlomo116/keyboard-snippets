@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <title>דף בדיקה — קיצורי הקלדה</title>
+  <style>
+    :root { --line:#d8dbe6; --muted:#6b7280; --brand:#4353d6; }
+    @media (prefers-color-scheme: dark) {
+      :root { --line:#3a3d4a; --muted:#9aa1b6; --brand:#a5b4ff; }
+      body { background:#14161c; color:#e9ebf2; }
+      input, textarea, .ce { background:#1e2029; color:#e9ebf2; }
+    }
+    body { font: 15px/1.6 -apple-system, Rubik, Arial, sans-serif; max-width: 780px; margin: 40px auto; padding: 0 20px; }
+    h1 { font-size: 21px; }
+    h2 { font-size: 15px; margin-top: 30px; }
+    .ok::before  { content: "✓ "; color: #16a34a; }
+    .no::before  { content: "✗ "; color: #dc2626; }
+    input, textarea, .ce {
+      width: 100%; box-sizing: border-box; padding: 11px; font: inherit;
+      border: 1px solid var(--line); border-radius: 9px; background: transparent; color: inherit;
+    }
+    .ce { min-height: 96px; }
+    .ce:empty::before { content: attr(data-ph); color: var(--muted); }
+    p.note { color: var(--muted); font-size: 13px; }
+    code { background: rgba(128,128,128,.15); padding: 1px 5px; border-radius: 4px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+    .scroller { height: 150px; overflow-y: auto; border: 1px dashed var(--line); border-radius: 9px; padding: 12px; }
+    .spacer { height: 110px; }
+  </style>
+</head>
+<body>
+  <h1>דף בדיקה — קיצורי הקלדה</h1>
+  <p class="note">התקינו את התוסף, הוסיפו כמה קיצורים, ואז הקלידו <code>//</code> בשדות שלמטה.</p>
+
+  <h2 class="ok">אזור טקסט (textarea)</h2>
+  <textarea rows="5" placeholder="נסו // — ובדקו גם בשורה השנייה והשלישית"></textarea>
+
+  <h2 class="ok">אזור עריכה עשיר (contenteditable)</h2>
+  <div class="ce" contenteditable="true" data-ph="נסו // כאן"></div>
+
+  <h2 class="ok">שדות קצרים</h2>
+  <div class="grid">
+    <input type="text" placeholder="type=text">
+    <input type="search" placeholder="type=search">
+    <input type="url" placeholder="type=url">
+    <input type="tel" placeholder="type=tel">
+  </div>
+
+  <h2 class="ok">בתוך אזור גלילה — התפריט אמור לעקוב אחרי השדה</h2>
+  <div class="scroller">
+    <div class="spacer"></div>
+    <textarea rows="3" placeholder="גללו ואז נסו //"></textarea>
+    <div class="spacer"></div>
+  </div>
+
+  <h2 class="no">כאן התפריט לא אמור להיפתח</h2>
+  <div class="grid">
+    <input type="password" placeholder="סיסמה — מוחרג">
+    <input type="email" placeholder="email — לא תומך ב-Selection API">
+    <input type="number" placeholder="number — לא תומך ב-Selection API">
+    <input type="text" value="https://example.com" placeholder="כתובת">
+  </div>
+  <p class="note">גם הקלדה של <code>https://</code> או <code>a//b</code> לא אמורה לפתוח את התפריט.</p>
+
+  <h2 class="ok">בתוך iframe</h2>
+  <iframe title="בדיקת iframe" style="width:100%;height:110px;border:1px solid var(--line);border-radius:9px"
+    srcdoc="&lt;body dir='rtl' style='font-family:system-ui;padding:10px;margin:0'&gt;&lt;textarea rows='3' style='width:100%;box-sizing:border-box' placeholder='נסו // בתוך iframe'&gt;&lt;/textarea&gt;&lt;/body&gt;"></iframe>
+
+  <h2>ליד תחתית המסך</h2>
+  <p class="note">גללו עד הסוף ונסו <code>//</code> — התפריט אמור להתהפך ולהיפתח כלפי מעלה.</p>
+  <div class="spacer"></div>
+  <textarea rows="2" placeholder="נסו // כאן, קרוב לתחתית"></textarea>
+</body>
+</html>
